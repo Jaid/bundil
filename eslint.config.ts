@@ -1,3 +1,1 @@
-import {makeEslintConfig} from 'eslint-config-jaid'
-
-export default makeEslintConfig()
+export {default} from 'eslint-config-jaid'
