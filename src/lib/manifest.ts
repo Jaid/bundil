@@ -21,14 +21,16 @@ export const writeManifest = async (project: Project, destination: string, decla
     const types = typesPath && `./${typesPath}`
     packageExports[key] = {
       ...types ? {types} : {},
-      import: runtime,
-      default: runtime,
+      ...entry.source ? {import: runtime, default: runtime} : {},
     }
     if (key === '.' && types) {
       output.types = types
     }
   }
-  output.exports = Object.assign(packageExports, project.passthrough)
+  Object.assign(packageExports, project.passthrough)
+  if (Object.keys(packageExports).length) {
+    output.exports = packageExports
+  }
   if (bins.size) {
     output.bin = typeof manifest.bin === 'string' ? './cli.js' : Object.fromEntries([...bins].map(([name, entry]) => [name, `./${entry.output}`]))
   }

@@ -230,3 +230,50 @@ test('rebuilds only the selected package and mode and keeps the last successful 
   expect(rebuilt.files).not.toContain('obsolete.js')
   expect(await Bun.file(sibling).text()).toBe('other mode')
 })
+
+test('packs a CLI-only package without inventing a runtime library export', async () => {
+  await fixture({bin: './src/main.ts'}, {
+    'src/main.ts': 'console.log("CLI works")',
+  })
+  const {outputFolder, files} = await bundil({target: root})
+  expect(files).toEqual(['cli.js', 'package.json'])
+  const manifest = await readManifest(outputFolder)
+  expect(manifest.bin).toBe('./cli.js')
+  expect(manifest.exports).toBeUndefined()
+  expect(manifest.types).toBeUndefined()
+  expect(await run(outputFolder, ['cli.js'])).toBe('CLI works')
+})
+
+test('packs declaration-only packages without emitting JavaScript and supports type subpaths', async () => {
+  await fixture({
+    types: './src/main.d.ts',
+    exports: {
+      '.': {types: './src/main.d.ts'},
+      './extra': {types: './src/extra.ts'},
+    },
+  }, {
+    'src/main.d.ts': 'export interface Greeting {name: string}',
+    'src/extra.ts': 'export type Extra = 42',
+  })
+  const {outputFolder, files} = await bundil({target: root})
+  expect(files.some(file => file.endsWith('.js'))).toBe(false)
+  const installed = await install(outputFolder)
+  const manifest = await readManifest(installed)
+  expect(manifest.exports).toEqual({
+    '.': {types: './lib.d.ts'},
+    './extra': {types: './exports/extra.d.ts'},
+  })
+  await typecheck('import type {Greeting} from "fixture"; import type {Extra} from "fixture/extra"; const value: Greeting = {name: "hello"}; const extra: Extra = 42')
+})
+
+test('packs a default CLI entry and declaration-only source without a root runtime entry', async () => {
+  await fixture({types: './src/index.ts'}, {
+    'src/index.ts': 'export type Value = string',
+    'src/cli.ts': 'console.log("CLI works")',
+  })
+  const {outputFolder, files} = await bundil({target: root})
+  expect(files).toContain('cli.js')
+  expect(files).toContain('lib.d.ts')
+  expect(files).not.toContain('lib.js')
+  expect((await readManifest(outputFolder)).exports).toEqual({'.': {types: './lib.d.ts'}})
+})

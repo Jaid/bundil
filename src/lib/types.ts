@@ -44,6 +44,8 @@ export interface Manifest extends Record<string, unknown> {
   name: string
   optionalDependencies?: Dependencies
   peerDependencies?: Dependencies
+  main?: string
   types?: string
+  typings?: string
   version: string
 }

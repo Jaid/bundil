@@ -1,6 +1,6 @@
 {
   "name": "bundil",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Pack ESM libraries for npm with Bun and Rolldown.",
   "funding": "https://github.com/sponsors/Jaid",

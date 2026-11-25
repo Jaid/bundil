@@ -22,6 +22,9 @@ export const rolldownInput = ({root, external}: Project): InputOptions => ({
 
 const writePrecompiledEntry = async (project: Project, destination: string) => {
   const {source, output} = project.entries.get('.')!
+  if (!source) {
+    throw new Error('Precompiled builds require a runtime entry.')
+  }
   const script = await Bun.file(source).text()
   const runtimeFile = join(destination, relativePath(project.root, source))
   await Bun.write(runtimeFile, await minify(script, project.strength))
@@ -39,7 +42,7 @@ export const writeRuntime = async (project: Project, destination: string) => {
   if (options.precompiled) {
     await writePrecompiledEntry(project, destination)
   }
-  const input = Object.fromEntries([...options.precompiled ? [] : entries.values(), ...bins.values()].map(entry => [entryName(entry.output), entry.source]))
+  const input = Object.fromEntries([...options.precompiled ? [] : entries.values(), ...bins.values()].flatMap(entry => entry.source ? [[entryName(entry.output), entry.source]] : []))
   if (!Object.keys(input).length) {
     return
   }

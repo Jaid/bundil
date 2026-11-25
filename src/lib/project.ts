@@ -14,6 +14,7 @@ const exportCondition = (entry: ExportTarget | undefined, condition: string) => 
   const value = entry[condition]
   return typeof value === 'string' ? value : undefined
 }
+const isDeclaration = (file: string) => /\.d\.[cm]?ts$/u.test(file)
 const runtimeTarget = (entry?: ExportTarget) => (typeof entry === 'string' ? entry : exportCondition(entry, 'import') ?? exportCondition(entry, 'default'))
 const exportMap = (field?: ExportTarget): ExportMap => {
   if (typeof field === 'object' && field && !Array.isArray(field) && Object.keys(field).some(key => key.startsWith('.'))) {
@@ -48,7 +49,9 @@ interface RuntimeEntry {
   output: string
   source: string
 }
-interface Entry extends RuntimeEntry {
+interface Entry {
+  output: string
+  source?: string
   types: string
 }
 
@@ -67,18 +70,44 @@ export const resolveProject = async (options: BundilOptions) => {
   }
   const outputFolder = resolve(root, options.outputFolder ?? 'dist', manifest.name, mode)
   const sourceExports = exportMap(manifest.exports)
-  const rootTarget = file ?? runtimeTarget(sourceExports['.']) ?? join('src', options.inputFileName ?? 'main.ts')
-  const rootRuntime = inside(root, options.runtimeEntryFile ?? rootTarget)
-  if (options.precompiled && !/\.m?js$/u.test(rootRuntime)) {
-    throw new Error('Expected precompiled ESM JavaScript. Set runtimeEntryFile to the .js or .mjs entry.')
+  let sourceBin = manifest.bin
+  if (!sourceBin) {
+    for (const candidate of ['src/cli.ts', 'src/cli.js']) {
+      if (await Bun.file(join(root, candidate)).exists()) {
+        sourceBin = candidate
+        break
+      }
+    }
   }
+  const commands = typeof sourceBin === 'string' ? {[basename(manifest.name)]: sourceBin} : sourceBin
+  const binSources = new Set(Object.values(commands ?? {}).map(path => inside(root, path)))
   const entries = new Map<string, Entry>
   const passthrough: ExportMap = {}
-  entries.set('.', {
-    output: 'lib.js',
-    source: rootRuntime,
-    types: inside(root, file ?? exportCondition(sourceExports['.'], 'types') ?? manifest.types ?? rootTarget),
-  })
+  const explicitRuntime = options.runtimeEntryFile ?? file ?? runtimeTarget(sourceExports['.']) ?? manifest.main
+  const explicitTypes = exportCondition(sourceExports['.'], 'types') ?? manifest.types ?? manifest.typings
+  const defaultRuntime = join('src', options.inputFileName ?? 'main.ts')
+  const fallback = inside(root, defaultRuntime)
+  const rootTarget = explicitRuntime ?? (!explicitTypes && !Object.keys(sourceExports).length && !binSources.has(fallback) && await Bun.file(fallback).exists() ? defaultRuntime : undefined)
+  let rootTypes = file ?? explicitTypes ?? rootTarget
+  if (!rootTarget && !rootTypes && !Object.keys(sourceExports).length && !binSources.size) {
+    for (const candidate of ['src/main.d.ts', 'src/index.d.ts', 'index.d.ts']) {
+      if (await Bun.file(join(root, candidate)).exists()) {
+        rootTypes = candidate
+        break
+      }
+    }
+  }
+  const rootRuntime = rootTarget && !isDeclaration(rootTarget) ? inside(root, rootTarget) : undefined
+  if (options.precompiled && (!rootRuntime || !/\.m?js$/u.test(rootRuntime))) {
+    throw new Error('Expected precompiled ESM JavaScript. Set runtimeEntryFile to the .js or .mjs entry.')
+  }
+  if (rootTypes) {
+    entries.set('.', {
+      output: 'lib.js',
+      source: rootRuntime,
+      types: inside(root, rootTypes),
+    })
+  }
   for (const [key, value] of Object.entries(sourceExports)) {
     if (key === '.') {
       continue
@@ -88,22 +117,21 @@ export const resolveProject = async (options: BundilOptions) => {
       continue
     }
     const target = runtimeTarget(value)
-    if (!key.startsWith('./') || key.includes('*') || !target || !/\.[cm]?[jt]sx?$/u.test(target)) {
-      throw new Error(`Expected a concrete ESM entry for export ${key}. Use precompiled mode for an existing export graph.`)
+    const types = exportCondition(value, 'types') ?? target
+    if (!key.startsWith('./') || key.includes('*') || !types || !/\.[cm]?[jt]sx?$/u.test(types) || target && !/\.[cm]?[jt]sx?$/u.test(target)) {
+      throw new Error('Expected a concrete ESM or declaration entry for export ' + key + '. Use precompiled mode for an existing export graph.')
     }
-    const output = `exports/${key.slice(2)}.js`
+    const output = 'exports/' + key.slice(2) + '.js'
     if (relativePath(root, inside(root, output)) !== output) {
-      throw new Error(`Invalid export path: ${key}`)
+      throw new Error('Invalid export path: ' + key)
     }
     entries.set(key, {
       output,
-      source: inside(root, target),
-      types: inside(root, exportCondition(value, 'types') ?? target),
+      source: target && !isDeclaration(target) ? inside(root, target) : undefined,
+      types: inside(root, types),
     })
   }
   const bins = new Map<string, RuntimeEntry>
-  const sourceBin = manifest.bin ?? (await Bun.file(join(root, 'src/cli.ts')).exists() ? 'src/cli.ts' : undefined)
-  const commands = typeof sourceBin === 'string' ? {[basename(manifest.name)]: sourceBin} : sourceBin
   const binFiles = new Map<string, string>
   for (const [name, path] of Object.entries(commands ?? {})) {
     if (!/^[\w\-.]+$/u.test(name) || name === '.' || name === '..') {
@@ -117,7 +145,10 @@ export const resolveProject = async (options: BundilOptions) => {
       output,
     })
   }
-  const sourceFiles = [root, ...entries.values().map(entry => entry.types), ...entries.values().map(entry => entry.source), ...bins.values().map(entry => entry.source)]
+  if (!entries.size && !bins.size) {
+    throw new Error('No library, declaration or CLI entry found in ' + root)
+  }
+  const sourceFiles = [root, ...entries.values().map(entry => entry.types), ...entries.values().flatMap(entry => entry.source ? [entry.source] : []), ...bins.values().map(entry => entry.source)]
   if (sourceFiles.some(source => isInside(outputFolder, source))) {
     throw new Error(`Output would overwrite the input package: ${outputFolder}`)
   }
@@ -128,7 +159,11 @@ export const resolveProject = async (options: BundilOptions) => {
   ])
   const external = (id: string) => id === 'bun' || id.startsWith('bun:') || id.startsWith('node:') || dependencies.has(dependencyName(id))
   const production = mode === 'production'
-  const emitDts = options.emitDts === undefined || options.emitDts === 'auto' ? production : options.emitDts
+  const hasDeclarationOnlyEntries = entries.values().some(entry => !entry.source)
+  if (hasDeclarationOnlyEntries && options.emitDts === false) {
+    throw new Error('Declaration-only exports require declaration emission.')
+  }
+  const emitDts = Boolean(entries.size) && (options.emitDts === undefined || options.emitDts === 'auto' ? production || hasDeclarationOnlyEntries : options.emitDts)
   const strength = terser === 'auto' ? production : terser
   return {
     root,

@@ -37,6 +37,8 @@ Run `bun pm pack` or `bun publish` **inside that directory**. Build scripts, dev
 - A declared `bin` is built alongside the library. Without one, `src/cli.ts` is picked up automatically. The primary executable is `cli.js`; its shebang is preserved, defaulting to `#!/usr/bin/env bun` when absent.
 - Regular, optional and peer dependencies (including subpaths) stay external by default. `--bundle` inlines regular dependencies; peers and optional dependencies stay external. A dependency still referenced by the published types stays in the manifest.
 
+CLI-only packages need only a `bin` entry (or a `src/cli.ts` or `src/cli.js` file); they do not get a fabricated library export. Declaration-only packages can specify `types` or a types-only conditional export, including subpaths. They produce declaration files without JavaScript entry points.
+
 ## Build modes and declarations
 
 Production is the default, matching the configured `build_lib` command. `--mode development` or `NODE_ENV=development` produces a readable build with `private: true` under `dist/<name>/development/`. Rebuilding replaces only the selected package and mode.
